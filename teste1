@@ -1,69 +1,730 @@
--- ServerScriptService > Script
+-- LocalScript em StarterPlayer -> StarterPlayerScripts
 
-local TRAIL_SETTINGS = {
-    Lifetime = 0.6,               -- duração do rastro
-    MinWidth = 0.15,
-    MaxWidth = 0.35,
-    Color = Color3.fromRGB(255, 0, 0),
-    Transparency = NumberSequence.new(0.1, 0.9), -- começa quase sólido e some
-    AttachmentOffset0 = Vector3.new(0, -0.5, -0.3), -- levemente abaixo/atrás
-    AttachmentOffset1 = Vector3.new(0, -0.5, -1.6), -- mais atrás
-    FaceCamera = false,
-    LightInfluence = 1,
-}
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local ContextActionService = game:GetService("ContextActionService")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
 
-local function ensureAttachment(parent: Instance, name: string, offset: Vector3)
-    local att = parent:FindFirstChild(name)
-    if not att then
-        att = Instance.new("Attachment")
-        att.Name = name
-        att.Parent = parent
-    end
-    att.Position = offset
-    return att
+local LocalPlayer = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+-- =======================
+-- Estado geral
+-- =======================
+local highlightActive = false
+local excludeSelfFromHighlight = false
+
+local flyActive = false
+local speed = 50
+
+local aimEnabled = false
+local aimHoldActive = false
+local aimFOV = 30 -- graus
+local aimSmoothing = 0.2 -- 0.0 sem suavização; 1.0 muito lento
+local aimTeamCheck = false
+local aimRequireVisibility = false
+local aimTargetPart = "Head"
+
+-- =======================
+-- Destaque (Highlight)
+-- =======================
+local HIGHLIGHT_NAME = "GlobalRedHighlight"
+local characterAddedConnections = {}
+
+local function addHighlightToCharacter(character)
+	if not character or not character.Parent then return end
+	if character:FindFirstChild(HIGHLIGHT_NAME) then return end
+
+	local highlight = Instance.new("Highlight")
+	highlight.Name = HIGHLIGHT_NAME
+	highlight.Adornee = character
+	highlight.FillColor = Color3.fromRGB(255, 0, 0)
+	highlight.OutlineColor = Color3.fromRGB(255, 80, 80)
+	highlight.FillTransparency = 0.5
+	highlight.OutlineTransparency = 0
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.Parent = character
 end
 
-local function addTrailToCharacter(character: Model)
-    local hrp = character:FindFirstChild("HumanoidRootPart")
-    if not hrp then
-        character.ChildAdded:Once(function(child)
-            if child.Name == "HumanoidRootPart" then
-                task.defer(addTrailToCharacter, character)
-            end
-        end)
-        return
-    end
-
-    -- Evita duplicar
-    local existing = hrp:FindFirstChild("RedTrail")
-    if existing then
-        existing:Destroy()
-    end
-
-    local att0 = ensureAttachment(hrp, "TrailAtt0", TRAIL_SETTINGS.AttachmentOffset0)
-    local att1 = ensureAttachment(hrp, "TrailAtt1", TRAIL_SETTINGS.AttachmentOffset1)
-
-    local trail = Instance.new("Trail")
-    trail.Name = "RedTrail"
-    trail.Attachment0 = att0
-    trail.Attachment1 = att1
-    trail.Lifetime = TRAIL_SETTINGS.Lifetime
-    trail.MinLength = 0        -- deixa o rastro começar imediatamente
-    trail.FaceCamera = TRAIL_SETTINGS.FaceCamera
-    trail.LightInfluence = TRAIL_SETTINGS.LightInfluence
-    trail.Transparency = TRAIL_SETTINGS.Transparency
-    trail.WidthScale = NumberSequence.new(TRAIL_SETTINGS.MinWidth, TRAIL_SETTINGS.MaxWidth)
-    trail.Color = ColorSequence.new(TRAIL_SETTINGS.Color)
-    trail.Enabled = true
-    trail.Parent = hrp
+local function removeHighlightFromCharacter(character)
+	if not character then return end
+	local h = character:FindFirstChild(HIGHLIGHT_NAME)
+	if h then h:Destroy() end
 end
 
-game.Players.PlayerAdded:Connect(function(player)
-    local function onCharacterAdded(char)
-        addTrailToCharacter(char)
-    end
-    player.CharacterAdded:Connect(onCharacterAdded)
-    if player.Character then
-        onCharacterAdded(player.Character)
-    end
+local function applyToAllPlayers()
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if excludeSelfFromHighlight and plr == LocalPlayer then
+			-- skip self
+		else
+			if plr.Character then
+				addHighlightToCharacter(plr.Character)
+			end
+		end
+	end
+end
+
+local function removeFromAllPlayers()
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr.Character then
+			removeHighlightFromCharacter(plr.Character)
+		end
+	end
+end
+
+local function connectCharacterAdded(plr)
+	if characterAddedConnections[plr] then
+		characterAddedConnections[plr]:Disconnect()
+		characterAddedConnections[plr] = nil
+	end
+
+	characterAddedConnections[plr] = plr.CharacterAdded:Connect(function(char)
+		if highlightActive then
+			if excludeSelfFromHighlight and plr == LocalPlayer then return end
+			if not char.Parent then
+				char.AncestryChanged:Wait()
+			end
+			addHighlightToCharacter(char)
+		end
+	end)
+end
+
+local function setupHighlightConnections()
+	for _, plr in ipairs(Players:GetPlayers()) do
+		connectCharacterAdded(plr)
+	end
+
+	Players.PlayerAdded:Connect(function(plr)
+		connectCharacterAdded(plr)
+		if highlightActive and plr.Character then
+			if excludeSelfFromHighlight and plr == LocalPlayer then return end
+			addHighlightToCharacter(plr.Character)
+		end
+	end)
+
+	Players.PlayerRemoving:Connect(function(plr)
+		if characterAddedConnections[plr] then
+			characterAddedConnections[plr]:Disconnect()
+			characterAddedConnections[plr] = nil
+		end
+	end)
+end
+
+local function setHighlightsEnabled(enabled)
+	highlightActive = enabled
+	if highlightActive then
+		applyToAllPlayers()
+	else
+		removeFromAllPlayers()
+	end
+end
+
+-- =======================
+-- Voo + Noclip
+-- =======================
+local hbConn, noclipConn
+local bodyGyro, bodyVel
+local moveDir = Vector3.zero
+local vert = 0
+local originalCollide = {} -- [BasePart] = bool
+
+local function getHRP()
+	local char = LocalPlayer.Character
+	if not char then return nil end
+	return char:FindFirstChild("HumanoidRootPart")
+end
+
+local function setNoclip(enabled)
+	local char = LocalPlayer.Character
+	if not char then return end
+
+	if enabled then
+		for _, desc in ipairs(char:GetDescendants()) do
+			if desc:IsA("BasePart") then
+				if originalCollide[desc] == nil then
+					originalCollide[desc] = desc.CanCollide
+				end
+				desc.CanCollide = false
+				desc.Massless = true
+			end
+		end
+
+		if noclipConn then noclipConn:Disconnect() end
+		noclipConn = RunService.Stepped:Connect(function()
+			for part, _ in pairs(originalCollide) do
+				if part and part.Parent then
+					part.CanCollide = false
+					part.Massless = true
+				end
+			end
+		end)
+	else
+		if noclipConn then noclipConn:Disconnect() noclipConn = nil end
+		for part, canCol in pairs(originalCollide) do
+			if part and part.Parent then
+				part.CanCollide = canCol
+			end
+		end
+		table.clear(originalCollide)
+	end
+end
+
+local function updateMovement(vec2, upDown)
+	local cam = camera
+	local right = cam.CFrame.RightVector
+	local forward = cam.CFrame.LookVector
+	forward = Vector3.new(forward.X, 0, forward.Z)
+	if forward.Magnitude > 0 then
+		forward = forward.Unit
+	else
+		forward = Vector3.new(0, 0, -1)
+	end
+
+	local move = (right * vec2.X) + (forward * vec2.Y)
+	moveDir = move
+	vert = upDown
+end
+
+local function bindFlyControls()
+	local function action(_, state, _input)
+		if state == Enum.UserInputState.Cancel then return end
+
+		local x, y = 0, 0
+		if UserInputService:IsKeyDown(Enum.KeyCode.A) then x -= 1 end
+		if UserInputService:IsKeyDown(Enum.KeyCode.D) then x += 1 end
+		if UserInputService:IsKeyDown(Enum.KeyCode.W) then y += 1 end
+		if UserInputService:IsKeyDown(Enum.KeyCode.S) then y -= 1 end
+
+		local upDown = 0
+		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then upDown += 1 end
+		if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+			upDown -= 1
+		end
+
+		updateMovement(Vector2.new(x, y), upDown)
+		return Enum.ContextActionResult.Sink
+	end
+
+	ContextActionService:BindAction("FlyMove", action, false,
+		Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D,
+		Enum.KeyCode.Space, Enum.KeyCode.LeftControl, Enum.KeyCode.LeftShift)
+end
+
+local function unbindFlyControls()
+	ContextActionService:UnbindAction("FlyMove")
+	moveDir = Vector3.zero
+	vert = 0
+end
+
+local function startFly()
+	if flyActive then return end
+	local hrp = getHRP()
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not (hrp and hum) then return end
+
+	flyActive = true
+
+	hum:ChangeState(Enum.HumanoidStateType.Physics)
+	hum.AutoRotate = false
+
+	bodyGyro = Instance.new("BodyGyro")
+	bodyGyro.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
+	bodyGyro.P = 1e5
+	bodyGyro.CFrame = hrp.CFrame
+	bodyGyro.Parent = hrp
+
+	bodyVel = Instance.new("BodyVelocity")
+	bodyVel.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+	bodyVel.P = 1e4
+	bodyVel.Velocity = Vector3.zero
+	bodyVel.Parent = hrp
+
+	setNoclip(true)
+	bindFlyControls()
+
+	if hbConn then hbConn:Disconnect() end
+	hbConn = RunService.Heartbeat:Connect(function()
+		if not flyActive then return end
+		local hrp2 = getHRP()
+		if not hrp2 then return end
+
+		bodyGyro.CFrame = CFrame.new(hrp2.Position, hrp2.Position + camera.CFrame.LookVector)
+
+		local move = moveDir
+		local up = Vector3.new(0, vert, 0)
+		local dir = move + up
+		if dir.Magnitude > 0 then
+			dir = dir.Unit
+		end
+
+		bodyVel.Velocity = dir * speed
+	end)
+end
+
+local function stopFly()
+	if not flyActive then return end
+	flyActive = false
+
+	if hbConn then hbConn:Disconnect() hbConn = nil end
+	unbindFlyControls()
+	setNoclip(false)
+
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+		hum.AutoRotate = true
+	end
+
+	if bodyGyro then bodyGyro:Destroy() bodyGyro = nil end
+	if bodyVel then bodyVel:Destroy() bodyVel = nil end
+end
+
+local function setFlyEnabled(enabled)
+	if enabled then startFly() else stopFly() end
+end
+
+-- Reaplicar estados em respawn
+LocalPlayer.CharacterAdded:Connect(function(char)
+	if flyActive then
+		char:WaitForChild("HumanoidRootPart", 10)
+		startFly()
+	end
+	if highlightActive and char then
+		if not (excludeSelfFromHighlight and LocalPlayer == LocalPlayer) then
+			addHighlightToCharacter(char)
+		end
+	end
 end)
+
+-- =======================
+-- Aim Assist (RMB)
+-- =======================
+local function isTeammate(plr)
+	local myTeam = LocalPlayer.Team
+	if not myTeam then return false end
+	return plr.Team == myTeam
+end
+
+local function visibleFromCamera(worldPos, targetChar)
+	if not aimRequireVisibility then return true end
+	local camPos = camera.CFrame.Position
+	local dir = (worldPos - camPos)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	local ignore = { LocalPlayer.Character }
+	if targetChar then table.insert(ignore, targetChar) end
+	params.FilterDescendantsInstances = ignore
+	local result = Workspace:Raycast(camPos, dir, params)
+	return result == nil
+end
+
+local function angleBetween(a, b)
+	local dot = math.clamp(a:Dot(b), -1, 1)
+	return math.deg(math.acos(dot))
+end
+
+local function getTarget()
+	local camPos = camera.CFrame.Position
+	local camLook = camera.CFrame.LookVector
+	local best, bestAngle
+
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LocalPlayer then
+			if not (aimTeamCheck and isTeammate(plr)) then
+				local char = plr.Character
+				local head = char and char:FindFirstChild(aimTargetPart)
+				if head then
+					local dir = (head.Position - camPos)
+					if dir.Magnitude > 1 then
+						local ang = angleBetween(camLook, dir.Unit)
+						if ang <= aimFOV then
+							if visibleFromCamera(head.Position, char) then
+								if not best or ang < bestAngle then
+                                    best, bestAngle = head, ang
+                                end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	return best
+end
+
+local aimConn
+local function startAim()
+	if aimConn then return end
+	aimConn = RunService.RenderStepped:Connect(function(dt)
+		if not (aimEnabled and aimHoldActive) then return end
+		local targetPart = getTarget()
+		if not targetPart then return end
+
+		local camCF = camera.CFrame
+		local camPos = camCF.Position
+		local desiredDir = (targetPart.Position - camPos).Unit
+
+		-- Suavização: interpola o LookVector
+		local currentDir = camCF.LookVector
+		local alpha = math.clamp(aimSmoothing * dt * 60, 0, 1) -- normaliza por FPS
+		local newDir = currentDir:Lerp(desiredDir, alpha)
+		if newDir.Magnitude < 1e-3 then return end
+		camera.CFrame = CFrame.new(camPos, camPos + newDir.Unit)
+	end)
+end
+
+local function stopAim()
+	if aimConn then aimConn:Disconnect() aimConn = nil end
+end
+
+-- Detecta botão direito
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed then return end
+	if input.UserInputType == Enum.UserInputType.MouseButton2 then
+		aimHoldActive = true
+	end
+end)
+UserInputService.InputEnded:Connect(function(input, processed)
+	if input.UserInputType == Enum.UserInputType.MouseButton2 then
+		aimHoldActive = false
+	end
+end)
+
+-- =======================
+-- UI
+-- =======================
+local function createUI()
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "ControlPanel"
+	gui.ResetOnSpawn = false
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+	-- Main frame
+	local frame = Instance.new("Frame")
+	frame.Name = "Main"
+	frame.Size = UDim2.fromOffset(340, 300)
+	frame.Position = UDim2.fromOffset(20, 180)
+	frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	frame.BorderSizePixel = 0
+	frame.Parent = gui
+
+	local corner = Instance.new("UICorner", frame)
+	corner.CornerRadius = UDim.new(0, 8)
+	local stroke = Instance.new("UIStroke", frame)
+	stroke.Color = Color3.fromRGB(60, 60, 60)
+
+	-- Header
+	local header = Instance.new("Frame")
+	header.Name = "Header"
+	header.Size = UDim2.new(1, 0, 0, 36)
+	header.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	header.BorderSizePixel = 0
+	header.Parent = frame
+	Instance.new("UICorner", header).CornerRadius = UDim.new(0, 8)
+
+	local title = Instance.new("TextLabel")
+	title.BackgroundTransparency = 1
+	title.Text = "Painel: Destaque, Voo, Aim"
+	title.Font = Enum.Font.GothamBold
+	title.TextSize = 16
+	title.TextColor3 = Color3.fromRGB(230, 230, 230)
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Size = UDim2.new(1, -60, 1, 0)
+	title.Position = UDim2.fromOffset(12, 0)
+	title.Parent = header
+
+	local minimize = Instance.new("TextButton")
+	minimize.Text = "—"
+	minimize.Font = Enum.Font.GothamBold
+	minimize.TextSize = 18
+	minimize.TextColor3 = Color3.fromRGB(230, 230, 230)
+	minimize.BackgroundTransparency = 1
+	minimize.Size = UDim2.fromOffset(36, 36)
+	minimize.Position = UDim2.new(1, -36, 0, 0)
+	minimize.Parent = header
+
+	-- Drag header
+	local dragging = false
+	local dragStart, startPos
+	header.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = true
+			dragStart = input.Position
+			startPos = frame.Position
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					dragging = false
+				end
+			end)
+		end
+	end)
+	header.InputChanged:Connect(function(input)
+		if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+			local delta = input.Position - dragStart
+			frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+		end
+	end)
+
+	local content = Instance.new("Frame")
+	content.Name = "Content"
+	content.BackgroundTransparency = 1
+	content.Size = UDim2.new(1, -16, 1, -48)
+	content.Position = UDim2.fromOffset(8, 40)
+	content.Parent = frame
+
+	local list = Instance.new("UIListLayout")
+	list.Padding = UDim.new(0, 8)
+	list.FillDirection = Enum.FillDirection.Vertical
+	list.HorizontalAlignment = Enum.HorizontalAlignment.Left
+	list.SortOrder = Enum.SortOrder.LayoutOrder
+	list.Parent = content
+
+	local function makeButton(text)
+		local btn = Instance.new("TextButton")
+		btn.Size = UDim2.new(1, 0, 0, 32)
+		btn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+		btn.TextColor3 = Color3.fromRGB(230, 230, 230)
+		btn.Font = Enum.Font.Gotham
+		btn.TextSize = 14
+		btn.Text = text
+		btn.AutoButtonColor = false
+		btn.Parent = content
+		Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+		local st = Instance.new("UIStroke", btn)
+		st.Color = Color3.fromRGB(70, 70, 70)
+		btn.MouseEnter:Connect(function() TweenService:Create(btn, TweenInfo.new(0.1), {BackgroundColor3 = Color3.fromRGB(55,55,55)}):Play() end)
+		btn.MouseLeave:Connect(function() TweenService:Create(btn, TweenInfo.new(0.1), {BackgroundColor3 = Color3.fromRGB(40,40,40)}):Play() end)
+		return btn
+	end
+
+	local function makeRow()
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, 0, 0, 32)
+		row.BackgroundTransparency = 1
+		row.Parent = content
+		local layout = Instance.new("UIListLayout")
+		layout.FillDirection = Enum.FillDirection.Horizontal
+		layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+		layout.Padding = UDim.new(0, 6)
+		layout.Parent = row
+		return row
+	end
+
+	local function makeSmallButton(parent, text, width)
+		local btn = Instance.new("TextButton")
+		btn.Size = UDim2.fromOffset(width, 32)
+		btn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+		btn.TextColor3 = Color3.fromRGB(230, 230, 230)
+		btn.Font = Enum.Font.Gotham
+		btn.TextSize = 14
+		btn.Text = text
+		btn.AutoButtonColor = false
+		btn.Parent = parent
+		Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+		local st = Instance.new("UIStroke", btn)
+		st.Color = Color3.fromRGB(70, 70, 70)
+		btn.MouseEnter:Connect(function() TweenService:Create(btn, TweenInfo.new(0.1), {BackgroundColor3 = Color3.fromRGB(55,55,55)}):Play() end)
+		btn.MouseLeave:Connect(function() TweenService:Create(btn, TweenInfo.new(0.1), {BackgroundColor3 = Color3.fromRGB(40,40,40)}):Play() end)
+		return btn
+	end
+
+	local function makeToggle(label, initial)
+		local row = makeRow()
+		row.Size = UDim2.new(1, 0, 0, 32)
+		local tag = Instance.new("TextLabel")
+		tag.Size = UDim2.new(1, -100, 1, 0)
+		tag.BackgroundTransparency = 1
+		tag.Text = label
+		tag.Font = Enum.Font.Gotham
+		tag.TextSize = 14
+		tag.TextColor3 = Color3.fromRGB(220,220,220)
+		tag.TextXAlignment = Enum.TextXAlignment.Left
+		tag.Parent = row
+
+		local btn = makeSmallButton(row, initial and "ON" or "OFF", 90)
+		local function setUI(on)
+			btn.Text = on and "ON" or "OFF"
+			btn.TextColor3 = on and Color3.fromRGB(0,200,120) or Color3.fromRGB(230,230,230)
+		end
+		setUI(initial)
+		return row, btn, setUI
+	end
+
+	local function makeNumberRow(label, getValue, setValue, minV, maxV, step)
+		local row = makeRow()
+		local lbl = Instance.new("TextLabel")
+		lbl.Text = label
+		lbl.Font = Enum.Font.Gotham
+		lbl.TextSize = 14
+		lbl.TextColor3 = Color3.fromRGB(220,220,220)
+		lbl.BackgroundTransparency = 1
+		lbl.Size = UDim2.new(1, -170, 1, 0)
+		lbl.TextXAlignment = Enum.TextXAlignment.Left
+		lbl.Parent = row
+
+		local minus = makeSmallButton(row, "−", 36)
+		local box = Instance.new("TextBox")
+		box.Size = UDim2.fromOffset(92, 32)
+		box.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		box.TextColor3 = Color3.fromRGB(230, 230, 230)
+		box.Font = Enum.Font.Gotham
+		box.TextSize = 14
+		box.ClearTextOnFocus = false
+		box.Text = tostring(getValue())
+		box.Parent = row
+		Instance.new("UICorner", box).CornerRadius = UDim.new(0, 6)
+		local stBox = Instance.new("UIStroke", box)
+		stBox.Color = Color3.fromRGB(70, 70, 70)
+
+		local plus = makeSmallButton(row, "+", 36)
+
+		local function clampV(v)
+			v = math.clamp(v, minV, maxV)
+			return v
+		end
+
+		local function refresh()
+			box.Text = tostring(getValue())
+		end
+
+		minus.MouseButton1Click:Connect(function()
+			local v = clampV(getValue() - step)
+			setValue(v)
+			refresh()
+		end)
+
+		plus.MouseButton1Click:Connect(function()
+			local v = clampV(getValue() + step)
+			setValue(v)
+			refresh()
+		end)
+
+		box.FocusLost:Connect(function()
+			local v = tonumber(box.Text)
+			if v then
+				setValue(clampV(v))
+				refresh()
+			else
+				refresh()
+			end
+		end)
+
+		return row, refresh
+	end
+
+	-- Secção: Destaque
+	local btnHighlight = makeButton("Destaque vermelho (F)")
+	btnHighlight.LayoutOrder = 1
+
+	local _, toggleSelfBtn, setSelfUI = makeToggle("Excluir a si mesmo do destaque", excludeSelfFromHighlight)
+	toggleSelfBtn.LayoutOrder = 2
+
+	-- Secção: Voo
+	local rowSpeed, refreshSpeed = makeNumberRow("Velocidade do voo", function() return speed end, function(v) speed = math.floor(v) end, 5, 300, 5)
+	rowSpeed.LayoutOrder = 3
+
+	local btnFly = makeButton("Voo + Noclip (V)")
+	btnFly.LayoutOrder = 4
+
+	-- Secção: Aim Assist
+	local _, aimToggleBtn, setAimUI = makeToggle("Aim Assist (segurar Botão Direito)", aimEnabled)
+	aimToggleBtn.LayoutOrder = 5
+
+	local rowFOV, refreshFOV = makeNumberRow("Aim FOV (graus)", function() return aimFOV end, function(v) aimFOV = math.floor(v) end, 5, 120, 5)
+	rowFOV.LayoutOrder = 6
+
+	local rowSmooth, refreshSmooth = makeNumberRow("Aim Suavização (0.0–1.0)", function() return aimSmoothing end, function(v) aimSmoothing = tonumber(string.format("%.2f", v)) end, 0.0, 1.0, 0.05)
+	rowSmooth.LayoutOrder = 7
+
+	local _, teamBtn, setTeamUI = makeToggle("Aim ignora companheiros (Team Check)", aimTeamCheck)
+	teamBtn.LayoutOrder = 8
+
+	local _, visBtn, setVisUI = makeToggle("Aim requer visibilidade (Raycast)", aimRequireVisibility)
+	visBtn.LayoutOrder = 9
+
+	-- Minimizar
+	local minimized = false
+	minimize.MouseButton1Click:Connect(function()
+		minimized = not minimized
+		TweenService:Create(content, TweenInfo.new(0.2), {Size = minimized and UDim2.new(1, -16, 0, 0) or UDim2.new(1, -16, 1, -48)}):Play()
+		TweenService:Create(frame, TweenInfo.new(0.2), {Size = minimized and UDim2.fromOffset(340, 44) or UDim2.fromOffset(340, 300)}):Play()
+		minimize.Text = minimized and "+" or "—"
+	end)
+
+	-- Atualizadores de UI
+	local function refreshButtons()
+		btnHighlight.Text = highlightActive and "Destaque vermelho: ON (F)" or "Destaque vermelho: OFF (F)"
+		btnHighlight.TextColor3 = highlightActive and Color3.fromRGB(255, 110, 110) or Color3.fromRGB(230,230,230)
+
+		btnFly.Text = flyActive and ("Voo + Noclip: ON (V)  ["..speed.."]") or "Voo + Noclip: OFF (V)"
+		btnFly.TextColor3 = flyActive and Color3.fromRGB(0, 200, 120) or Color3.fromRGB(230,230,230)
+
+		setSelfUI(excludeSelfFromHighlight)
+		setAimUI(aimEnabled)
+		setTeamUI(aimTeamCheck)
+		setVisUI(aimRequireVisibility)
+		refreshSpeed(); refreshFOV(); refreshSmooth()
+	end
+
+	-- Ligações de UI
+	btnHighlight.MouseButton1Click:Connect(function()
+		setHighlightsEnabled(!highlightActive)
+		refreshButtons()
+	end)
+
+	toggleSelfBtn.MouseButton1Click:Connect(function()
+		excludeSelfFromHighlight = not excludeSelfFromHighlight
+		if highlightActive then
+			removeFromAllPlayers()
+			applyToAllPlayers()
+		end
+		refreshButtons()
+	end)
+
+	btnFly.MouseButton1Click:Connect(function()
+		setFlyEnabled(not flyActive)
+		refreshButtons()
+	end)
+
+	aimToggleBtn.MouseButton1Click:Connect(function()
+		aimEnabled = not aimEnabled
+		if aimEnabled then startAim() else stopAim() end
+		refreshButtons()
+	end)
+
+	teamBtn.MouseButton1Click:Connect(function()
+		aimTeamCheck = not aimTeamCheck
+		refreshButtons()
+	end)
+
+	visBtn.MouseButton1Click:Connect(function()
+		aimRequireVisibility = not aimRequireVisibility
+		refreshButtons()
+	end)
+
+	-- Hotkeys
+	UserInputService.InputBegan:Connect(function(input, processed)
+		if processed then return end
+		if input.KeyCode == Enum.KeyCode.F then
+			setHighlightsEnabled(not highlightActive)
+			refreshButtons()
+		elseif input.KeyCode == Enum.KeyCode.V then
+			setFlyEnabled(not flyActive)
+			refreshButtons()
+		end
+	end)
+
+	refreshButtons()
+end
+
+-- =======================
+-- Inicialização
+-- =======================
+setupHighlightConnections()
+createUI()
+startAim() -- inicia laço; ele só age quando aimEnabled e RMB pressionado
