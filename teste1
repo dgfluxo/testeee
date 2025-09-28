@@ -1,263 +1,69 @@
--- StarterPlayerScripts/DGHubClient (tema roxo e preto)
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService")
-local UserInputService = game:GetService("UserInputService")
+-- ServerScriptService > Script
 
-local REMOTE_NAME = "DGHub_ValidateKey"
-local ValidateEvent = ReplicatedStorage:WaitForChild(REMOTE_NAME)
-
-local player = Players.LocalPlayer
-
--- Paleta de cores (roxo/preto)
-local Palette = {
-	Background = Color3.fromRGB(10, 8, 14),     -- preto arroxeado
-	Panel      = Color3.fromRGB(18, 16, 26),    -- painel principal
-	PanelAlt   = Color3.fromRGB(28, 22, 44),    -- elementos
-	Accent     = Color3.fromRGB(137, 99, 255),  -- roxo principal
-	AccentDark = Color3.fromRGB(75, 49, 148),   -- roxo escuro
-	Text       = Color3.fromRGB(240, 236, 252), -- texto claro
-	MutedText  = Color3.fromRGB(190, 180, 210), -- texto secundário
-	Warn       = Color3.fromRGB(255, 170, 60),  -- aviso
-	Error      = Color3.fromRGB(255, 90, 120),  -- erro
-	Success    = Color3.fromRGB(170, 120, 255), -- sucesso (roxo claro)
+local TRAIL_SETTINGS = {
+    Lifetime = 0.6,               -- duração do rastro
+    MinWidth = 0.15,
+    MaxWidth = 0.35,
+    Color = Color3.fromRGB(255, 0, 0),
+    Transparency = NumberSequence.new(0.1, 0.9), -- começa quase sólido e some
+    AttachmentOffset0 = Vector3.new(0, -0.5, -0.3), -- levemente abaixo/atrás
+    AttachmentOffset1 = Vector3.new(0, -0.5, -1.6), -- mais atrás
+    FaceCamera = false,
+    LightInfluence = 1,
 }
 
--- Cria GUI via script
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "DGHubUI"
-screenGui.ResetOnSpawn = false
-screenGui.IgnoreGuiInset = true
-screenGui.Parent = player:WaitForChild("PlayerGui")
-
--- Plano de fundo opcional translúcido (overlay)
-local overlay = Instance.new("Frame")
-overlay.Name = "Overlay"
-overlay.Size = UDim2.fromScale(1, 1)
-overlay.BackgroundColor3 = Palette.Background
-overlay.BackgroundTransparency = 0.15
-overlay.Visible = false
-overlay.Parent = screenGui
-
--- Botão para abrir/fechar
-local toggleBtn = Instance.new("TextButton")
-toggleBtn.Name = "ToggleButton"
-toggleBtn.Size = UDim2.fromOffset(140, 38)
-toggleBtn.Position = UDim2.new(0, 20, 0, 100)
-toggleBtn.BackgroundColor3 = Palette.AccentDark
-toggleBtn.TextColor3 = Palette.Text
-toggleBtn.Font = Enum.Font.GothamBold
-toggleBtn.Text = "Abrir DG Hub"
-toggleBtn.TextSize = 14
-toggleBtn.AutoButtonColor = false
-toggleBtn.Parent = screenGui
-Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 8)
-
--- Hover simples no botão
-local function hover(btn, baseColor, hoverColor)
-	btn.MouseEnter:Connect(function()
-		btn:TweenBackgroundColor3(hoverColor, Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.12, true)
-	end)
-	btn.MouseLeave:Connect(function()
-		btn:TweenBackgroundColor3(baseColor, Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.12, true)
-	end)
-end
-hover(toggleBtn, Palette.AccentDark, Palette.Accent)
-
--- Janela principal
-local mainFrame = Instance.new("Frame")
-mainFrame.Name = "MainFrame"
-mainFrame.Size = UDim2.fromOffset(460, 280)
-mainFrame.Position = UDim2.new(0, 20, 0, 150)
-mainFrame.BackgroundColor3 = Palette.Panel
-mainFrame.BorderSizePixel = 0
-mainFrame.Visible = false
-mainFrame.Parent = screenGui
-Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 12)
-
--- Borda de brilho sutil
-local glow = Instance.new("UIStroke")
-glow.Thickness = 1.5
-glow.Color = Palette.Accent
-glow.Transparency = 0.5
-glow.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-glow.Parent = mainFrame
-
--- Título
-local title = Instance.new("TextLabel")
-title.Name = "Title"
-title.Size = UDim2.new(1, -20, 0, 40)
-title.Position = UDim2.new(0, 10, 0, 8)
-title.BackgroundTransparency = 1
-title.Text = "dg hub"
-title.Font = Enum.Font.GothamBlack
-title.TextColor3 = Palette.Text
-title.TextScaled = true
-title.Parent = mainFrame
-
--- Linha decorativa
-local line = Instance.new("Frame")
-line.Size = UDim2.new(1, -20, 0, 2)
-line.Position = UDim2.new(0, 10, 0, 52)
-line.BackgroundColor3 = Palette.Accent
-line.BorderSizePixel = 0
-line.Parent = mainFrame
-
--- Container da Key
-local keyContainer = Instance.new("Frame")
-keyContainer.Name = "KeyContainer"
-keyContainer.Size = UDim2.new(1, -20, 0, 150)
-keyContainer.Position = UDim2.new(0, 10, 0, 70)
-keyContainer.BackgroundTransparency = 1
-keyContainer.Parent = mainFrame
-
--- Input
-local keyBox = Instance.new("TextBox")
-keyBox.Name = "KeyBox"
-keyBox.PlaceholderText = "Digite sua chave..."
-keyBox.Text = ""
-keyBox.ClearTextOnFocus = false
-keyBox.Size = UDim2.new(1, -150, 0, 42)
-keyBox.Position = UDim2.new(0, 0, 0, 0)
-keyBox.BackgroundColor3 = Palette.PanelAlt
-keyBox.TextColor3 = Palette.Text
-keyBox.PlaceholderColor3 = Palette.MutedText
-keyBox.Font = Enum.Font.Gotham
-keyBox.TextSize = 16
-keyBox.Parent = keyContainer
-Instance.new("UICorner", keyBox).CornerRadius = UDim.new(0, 10)
-
-local keyStroke = Instance.new("UIStroke")
-keyStroke.Thickness = 1
-keyStroke.Color = Palette.AccentDark
-keyStroke.Transparency = 0.35
-keyStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-keyStroke.Parent = keyBox
-
-keyBox.Focused:Connect(function()
-	keyStroke.Color = Palette.Accent
-	keyStroke.Transparency = 0.1
-end)
-keyBox.FocusLost:Connect(function()
-	keyStroke.Color = Palette.AccentDark
-	keyStroke.Transparency = 0.35
-end)
-
--- Botão validar
-local validateBtn = Instance.new("TextButton")
-validateBtn.Name = "ValidateButton"
-validateBtn.Text = "Validar"
-validateBtn.Size = UDim2.fromOffset(130, 42)
-validateBtn.Position = UDim2.new(1, -130, 0, 0)
-validateBtn.BackgroundColor3 = Palette.Accent
-validateBtn.TextColor3 = Palette.Text
-validateBtn.Font = Enum.Font.GothamBold
-validateBtn.TextSize = 16
-validateBtn.AutoButtonColor = false
-validateBtn.Parent = keyContainer
-Instance.new("UICorner", validateBtn).CornerRadius = UDim.new(0, 10)
-hover(validateBtn, Palette.Accent, Palette.AccentDark)
-
--- Status
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Name = "Status"
-statusLabel.Size = UDim2.new(1, 0, 0, 60)
-statusLabel.Position = UDim2.new(0, 0, 0, 60)
-statusLabel.BackgroundTransparency = 1
-statusLabel.Text = "Insira a chave para acessar."
-statusLabel.TextColor3 = Palette.MutedText
-statusLabel.Font = Enum.Font.Gotham
-statusLabel.TextSize = 14
-statusLabel.TextWrapped = true
-statusLabel.TextXAlignment = Enum.TextXAlignment.Left
-statusLabel.Parent = keyContainer
-
--- Área desbloqueada
-local unlockedLabel = Instance.new("TextLabel")
-unlockedLabel.Name = "UnlockedLabel"
-unlockedLabel.Size = UDim2.new(1, 0, 1, -70)
-unlockedLabel.Position = UDim2.new(0, 0, 0, 70)
-unlockedLabel.BackgroundTransparency = 1
-unlockedLabel.Text = "Acesso Liberado!"
-unlockedLabel.TextColor3 = Palette.Success
-unlockedLabel.Font = Enum.Font.GothamBlack
-unlockedLabel.TextScaled = true
-unlockedLabel.Visible = false
-unlockedLabel.Parent = mainFrame
-
--- Funções de UI
-local function setOpen(open)
-	mainFrame.Visible = open
-	overlay.Visible = open
-	toggleBtn.Text = open and "Fechar DG Hub" or "Abrir DG Hub"
-	if open then
-		mainFrame.Size = UDim2.fromOffset(460, 0)
-		mainFrame:TweenSize(UDim2.fromOffset(460, 280), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.2, true)
-	end
+local function ensureAttachment(parent: Instance, name: string, offset: Vector3)
+    local att = parent:FindFirstChild(name)
+    if not att then
+        att = Instance.new("Attachment")
+        att.Name = name
+        att.Parent = parent
+    end
+    att.Position = offset
+    return att
 end
 
-toggleBtn.MouseButton1Click:Connect(function()
-	setOpen(not mainFrame.Visible)
-end)
+local function addTrailToCharacter(character: Model)
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then
+        character.ChildAdded:Once(function(child)
+            if child.Name == "HumanoidRootPart" then
+                task.defer(addTrailToCharacter, character)
+            end
+        end)
+        return
+    end
 
--- Atalho RightShift
-UserInputService.InputBegan:Connect(function(input, gpe)
-	if gpe then return end
-	if input.KeyCode == Enum.KeyCode.RightShift then
-		setOpen(not mainFrame.Visible)
-	end
-end)
+    -- Evita duplicar
+    local existing = hrp:FindFirstChild("RedTrail")
+    if existing then
+        existing:Destroy()
+    end
 
-local validating = false
-local function setStatus(text, color)
-	statusLabel.Text = text
-	if color then statusLabel.TextColor3 = color end
+    local att0 = ensureAttachment(hrp, "TrailAtt0", TRAIL_SETTINGS.AttachmentOffset0)
+    local att1 = ensureAttachment(hrp, "TrailAtt1", TRAIL_SETTINGS.AttachmentOffset1)
+
+    local trail = Instance.new("Trail")
+    trail.Name = "RedTrail"
+    trail.Attachment0 = att0
+    trail.Attachment1 = att1
+    trail.Lifetime = TRAIL_SETTINGS.Lifetime
+    trail.MinLength = 0        -- deixa o rastro começar imediatamente
+    trail.FaceCamera = TRAIL_SETTINGS.FaceCamera
+    trail.LightInfluence = TRAIL_SETTINGS.LightInfluence
+    trail.Transparency = TRAIL_SETTINGS.Transparency
+    trail.WidthScale = NumberSequence.new(TRAIL_SETTINGS.MinWidth, TRAIL_SETTINGS.MaxWidth)
+    trail.Color = ColorSequence.new(TRAIL_SETTINGS.Color)
+    trail.Enabled = true
+    trail.Parent = hrp
 end
 
-local function setUnlockedUI(isUnlocked, msg)
-	unlockedLabel.Visible = isUnlocked
-	keyContainer.Visible = not isUnlocked
-	if msg then
-		setStatus(msg, isUnlocked and Palette.Success or Palette.MutedText)
-	end
-end
-
--- Enviar validação
-validateBtn.MouseButton1Click:Connect(function()
-	if validating then return end
-	local key = (keyBox.Text or "")
-	if key == "" then
-		setStatus("Informe uma chave.", Palette.Warn)
-		return
-	end
-	validating = true
-	validateBtn.AutoButtonColor = false
-	validateBtn.BackgroundColor3 = Palette.AccentDark
-	setStatus("Validando...", Color3.fromRGB(190, 170, 255))
-
-	ValidateEvent:FireServer({
-		action = "validate",
-		key = key,
-	})
-	task.delay(0.7, function()
-		validateBtn.AutoButtonColor = true
-		validateBtn.BackgroundColor3 = Palette.Accent
-		validating = false
-	end)
+game.Players.PlayerAdded:Connect(function(player)
+    local function onCharacterAdded(char)
+        addTrailToCharacter(char)
+    end
+    player.CharacterAdded:Connect(onCharacterAdded)
+    if player.Character then
+        onCharacterAdded(player.Character)
+    end
 end)
-
--- Receber resultados do servidor
-ValidateEvent.OnClientEvent:Connect(function(result)
-	if typeof(result) ~= "table" then return end
-	if result.unlocked then
-		setUnlockedUI(true, result.message or "Acesso liberado.")
-	else
-		setUnlockedUI(false, result.message or "Insira a chave para acessar.")
-		if result.success == false then
-			setStatus(result.message or "Chave inválida.", Palette.Error)
-		end
-	end
-end)
-
--- Abre o menu a primeira vez
-setOpen(true)
