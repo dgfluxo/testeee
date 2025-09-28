@@ -3,7 +3,6 @@
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
-local ContextActionService = game:GetService("ContextActionService")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
@@ -16,13 +15,10 @@ local camera = workspace.CurrentCamera
 local highlightActive = false
 local excludeSelfFromHighlight = false
 
-local flyActive = false
-local speed = 50
-
 local aimEnabled = false
-local aimHoldActive = false
+local aimHoldActive = false -- segurar botão direito
 local aimFOV = 30 -- graus
-local aimSmoothing = 0.2 -- 0.0 sem suavização; 1.0 muito lento
+local aimSmoothing = 0.2 -- 0.0 = instantâneo, 1.0 = muito suave (lento)
 local aimTeamCheck = false
 local aimRequireVisibility = false
 local aimTargetPart = "Head"
@@ -57,7 +53,7 @@ end
 local function applyToAllPlayers()
 	for _, plr in ipairs(Players:GetPlayers()) do
 		if excludeSelfFromHighlight and plr == LocalPlayer then
-			-- skip self
+			-- não destaca a si mesmo
 		else
 			if plr.Character then
 				addHighlightToCharacter(plr.Character)
@@ -121,178 +117,8 @@ local function setHighlightsEnabled(enabled)
 	end
 end
 
--- =======================
--- Voo + Noclip
--- =======================
-local hbConn, noclipConn
-local bodyGyro, bodyVel
-local moveDir = Vector3.zero
-local vert = 0
-local originalCollide = {} -- [BasePart] = bool
-
-local function getHRP()
-	local char = LocalPlayer.Character
-	if not char then return nil end
-	return char:FindFirstChild("HumanoidRootPart")
-end
-
-local function setNoclip(enabled)
-	local char = LocalPlayer.Character
-	if not char then return end
-
-	if enabled then
-		for _, desc in ipairs(char:GetDescendants()) do
-			if desc:IsA("BasePart") then
-				if originalCollide[desc] == nil then
-					originalCollide[desc] = desc.CanCollide
-				end
-				desc.CanCollide = false
-				desc.Massless = true
-			end
-		end
-
-		if noclipConn then noclipConn:Disconnect() end
-		noclipConn = RunService.Stepped:Connect(function()
-			for part, _ in pairs(originalCollide) do
-				if part and part.Parent then
-					part.CanCollide = false
-					part.Massless = true
-				end
-			end
-		end)
-	else
-		if noclipConn then noclipConn:Disconnect() noclipConn = nil end
-		for part, canCol in pairs(originalCollide) do
-			if part and part.Parent then
-				part.CanCollide = canCol
-			end
-		end
-		table.clear(originalCollide)
-	end
-end
-
-local function updateMovement(vec2, upDown)
-	local cam = camera
-	local right = cam.CFrame.RightVector
-	local forward = cam.CFrame.LookVector
-	forward = Vector3.new(forward.X, 0, forward.Z)
-	if forward.Magnitude > 0 then
-		forward = forward.Unit
-	else
-		forward = Vector3.new(0, 0, -1)
-	end
-
-	local move = (right * vec2.X) + (forward * vec2.Y)
-	moveDir = move
-	vert = upDown
-end
-
-local function bindFlyControls()
-	local function action(_, state, _input)
-		if state == Enum.UserInputState.Cancel then return end
-
-		local x, y = 0, 0
-		if UserInputService:IsKeyDown(Enum.KeyCode.A) then x -= 1 end
-		if UserInputService:IsKeyDown(Enum.KeyCode.D) then x += 1 end
-		if UserInputService:IsKeyDown(Enum.KeyCode.W) then y += 1 end
-		if UserInputService:IsKeyDown(Enum.KeyCode.S) then y -= 1 end
-
-		local upDown = 0
-		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then upDown += 1 end
-		if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
-			upDown -= 1
-		end
-
-		updateMovement(Vector2.new(x, y), upDown)
-		return Enum.ContextActionResult.Sink
-	end
-
-	ContextActionService:BindAction("FlyMove", action, false,
-		Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D,
-		Enum.KeyCode.Space, Enum.KeyCode.LeftControl, Enum.KeyCode.LeftShift)
-end
-
-local function unbindFlyControls()
-	ContextActionService:UnbindAction("FlyMove")
-	moveDir = Vector3.zero
-	vert = 0
-end
-
-local function startFly()
-	if flyActive then return end
-	local hrp = getHRP()
-	local char = LocalPlayer.Character
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	if not (hrp and hum) then return end
-
-	flyActive = true
-
-	hum:ChangeState(Enum.HumanoidStateType.Physics)
-	hum.AutoRotate = false
-
-	bodyGyro = Instance.new("BodyGyro")
-	bodyGyro.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
-	bodyGyro.P = 1e5
-	bodyGyro.CFrame = hrp.CFrame
-	bodyGyro.Parent = hrp
-
-	bodyVel = Instance.new("BodyVelocity")
-	bodyVel.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-	bodyVel.P = 1e4
-	bodyVel.Velocity = Vector3.zero
-	bodyVel.Parent = hrp
-
-	setNoclip(true)
-	bindFlyControls()
-
-	if hbConn then hbConn:Disconnect() end
-	hbConn = RunService.Heartbeat:Connect(function()
-		if not flyActive then return end
-		local hrp2 = getHRP()
-		if not hrp2 then return end
-
-		bodyGyro.CFrame = CFrame.new(hrp2.Position, hrp2.Position + camera.CFrame.LookVector)
-
-		local move = moveDir
-		local up = Vector3.new(0, vert, 0)
-		local dir = move + up
-		if dir.Magnitude > 0 then
-			dir = dir.Unit
-		end
-
-		bodyVel.Velocity = dir * speed
-	end)
-end
-
-local function stopFly()
-	if not flyActive then return end
-	flyActive = false
-
-	if hbConn then hbConn:Disconnect() hbConn = nil end
-	unbindFlyControls()
-	setNoclip(false)
-
-	local char = LocalPlayer.Character
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	if hum then
-		hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-		hum.AutoRotate = true
-	end
-
-	if bodyGyro then bodyGyro:Destroy() bodyGyro = nil end
-	if bodyVel then bodyVel:Destroy() bodyVel = nil end
-end
-
-local function setFlyEnabled(enabled)
-	if enabled then startFly() else stopFly() end
-end
-
--- Reaplicar estados em respawn
+-- Reaplicar destaque no respawn próprio, se estiver ativo
 LocalPlayer.CharacterAdded:Connect(function(char)
-	if flyActive then
-		char:WaitForChild("HumanoidRootPart", 10)
-		startFly()
-	end
 	if highlightActive and char then
 		if not (excludeSelfFromHighlight and LocalPlayer == LocalPlayer) then
 			addHighlightToCharacter(char)
@@ -301,7 +127,7 @@ LocalPlayer.CharacterAdded:Connect(function(char)
 end)
 
 -- =======================
--- Aim Assist (RMB)
+-- Aim Assist (segurar RMB)
 -- =======================
 local function isTeammate(plr)
 	local myTeam = LocalPlayer.Team
@@ -336,16 +162,16 @@ local function getTarget()
 		if plr ~= LocalPlayer then
 			if not (aimTeamCheck and isTeammate(plr)) then
 				local char = plr.Character
-				local head = char and char:FindFirstChild(aimTargetPart)
-				if head then
-					local dir = (head.Position - camPos)
+				local part = char and char:FindFirstChild(aimTargetPart)
+				if part then
+					local dir = (part.Position - camPos)
 					if dir.Magnitude > 1 then
 						local ang = angleBetween(camLook, dir.Unit)
 						if ang <= aimFOV then
-							if visibleFromCamera(head.Position, char) then
+							if visibleFromCamera(part.Position, char) then
 								if not best or ang < bestAngle then
-                                    best, bestAngle = head, ang
-                                end
+									best, bestAngle = part, ang
+								end
 							end
 						end
 					end
@@ -357,7 +183,7 @@ local function getTarget()
 end
 
 local aimConn
-local function startAim()
+local function startAimLoop()
 	if aimConn then return end
 	aimConn = RunService.RenderStepped:Connect(function(dt)
 		if not (aimEnabled and aimHoldActive) then return end
@@ -368,27 +194,26 @@ local function startAim()
 		local camPos = camCF.Position
 		local desiredDir = (targetPart.Position - camPos).Unit
 
-		-- Suavização: interpola o LookVector
 		local currentDir = camCF.LookVector
-		local alpha = math.clamp(aimSmoothing * dt * 60, 0, 1) -- normaliza por FPS
+		local alpha = math.clamp(aimSmoothing * dt * 60, 0, 1)
 		local newDir = currentDir:Lerp(desiredDir, alpha)
 		if newDir.Magnitude < 1e-3 then return end
 		camera.CFrame = CFrame.new(camPos, camPos + newDir.Unit)
 	end)
 end
 
-local function stopAim()
+local function stopAimLoop()
 	if aimConn then aimConn:Disconnect() aimConn = nil end
 end
 
--- Detecta botão direito
+-- Lida com o botão direito (não cria hotkeys extras)
 UserInputService.InputBegan:Connect(function(input, processed)
 	if processed then return end
 	if input.UserInputType == Enum.UserInputType.MouseButton2 then
 		aimHoldActive = true
 	end
 end)
-UserInputService.InputEnded:Connect(function(input, processed)
+UserInputService.InputEnded:Connect(function(input, _processed)
 	if input.UserInputType == Enum.UserInputType.MouseButton2 then
 		aimHoldActive = false
 	end
@@ -407,14 +232,13 @@ local function createUI()
 	-- Main frame
 	local frame = Instance.new("Frame")
 	frame.Name = "Main"
-	frame.Size = UDim2.fromOffset(340, 300)
-	frame.Position = UDim2.fromOffset(20, 180)
+	frame.Size = UDim2.fromOffset(340, 260)
+	frame.Position = UDim2.fromOffset(20, 200)
 	frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 	frame.BorderSizePixel = 0
 	frame.Parent = gui
 
-	local corner = Instance.new("UICorner", frame)
-	corner.CornerRadius = UDim.new(0, 8)
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
 	local stroke = Instance.new("UIStroke", frame)
 	stroke.Color = Color3.fromRGB(60, 60, 60)
 
@@ -429,24 +253,14 @@ local function createUI()
 
 	local title = Instance.new("TextLabel")
 	title.BackgroundTransparency = 1
-	title.Text = "Painel: Destaque, Voo, Aim"
+	title.Text = "Painel: Destaque + Aim"
 	title.Font = Enum.Font.GothamBold
 	title.TextSize = 16
 	title.TextColor3 = Color3.fromRGB(230, 230, 230)
 	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.Size = UDim2.new(1, -60, 1, 0)
+	title.Size = UDim2.new(1, -36, 1, 0)
 	title.Position = UDim2.fromOffset(12, 0)
 	title.Parent = header
-
-	local minimize = Instance.new("TextButton")
-	minimize.Text = "—"
-	minimize.Font = Enum.Font.GothamBold
-	minimize.TextSize = 18
-	minimize.TextColor3 = Color3.fromRGB(230, 230, 230)
-	minimize.BackgroundTransparency = 1
-	minimize.Size = UDim2.fromOffset(36, 36)
-	minimize.Position = UDim2.new(1, -36, 0, 0)
-	minimize.Parent = header
 
 	-- Drag header
 	local dragging = false
@@ -484,6 +298,19 @@ local function createUI()
 	list.SortOrder = Enum.SortOrder.LayoutOrder
 	list.Parent = content
 
+	local function makeRow(height)
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, 0, 0, height or 32)
+		row.BackgroundTransparency = 1
+		row.Parent = content
+		local layout = Instance.new("UIListLayout")
+		layout.FillDirection = Enum.FillDirection.Horizontal
+		layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+		layout.Padding = UDim.new(0, 6)
+		layout.Parent = row
+		return row
+	end
+
 	local function makeButton(text)
 		local btn = Instance.new("TextButton")
 		btn.Size = UDim2.new(1, 0, 0, 32)
@@ -500,19 +327,6 @@ local function createUI()
 		btn.MouseEnter:Connect(function() TweenService:Create(btn, TweenInfo.new(0.1), {BackgroundColor3 = Color3.fromRGB(55,55,55)}):Play() end)
 		btn.MouseLeave:Connect(function() TweenService:Create(btn, TweenInfo.new(0.1), {BackgroundColor3 = Color3.fromRGB(40,40,40)}):Play() end)
 		return btn
-	end
-
-	local function makeRow()
-		local row = Instance.new("Frame")
-		row.Size = UDim2.new(1, 0, 0, 32)
-		row.BackgroundTransparency = 1
-		row.Parent = content
-		local layout = Instance.new("UIListLayout")
-		layout.FillDirection = Enum.FillDirection.Horizontal
-		layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
-		layout.Padding = UDim.new(0, 6)
-		layout.Parent = row
-		return row
 	end
 
 	local function makeSmallButton(parent, text, width)
@@ -534,8 +348,7 @@ local function createUI()
 	end
 
 	local function makeToggle(label, initial)
-		local row = makeRow()
-		row.Size = UDim2.new(1, 0, 0, 32)
+		local row = makeRow(32)
 		local tag = Instance.new("TextLabel")
 		tag.Size = UDim2.new(1, -100, 1, 0)
 		tag.BackgroundTransparency = 1
@@ -555,15 +368,15 @@ local function createUI()
 		return row, btn, setUI
 	end
 
-	local function makeNumberRow(label, getValue, setValue, minV, maxV, step)
-		local row = makeRow()
+	local function makeNumberRow(label, getValue, setValue, minV, maxV, step, widthMid)
+		local row = makeRow(32)
 		local lbl = Instance.new("TextLabel")
 		lbl.Text = label
 		lbl.Font = Enum.Font.Gotham
 		lbl.TextSize = 14
 		lbl.TextColor3 = Color3.fromRGB(220,220,220)
 		lbl.BackgroundTransparency = 1
-		lbl.Size = UDim2.new(1, -170, 1, 0)
+		lbl.Size = UDim2.new(1, -(widthMid or 170), 1, 0)
 		lbl.TextXAlignment = Enum.TextXAlignment.Left
 		lbl.Parent = row
 
@@ -583,97 +396,64 @@ local function createUI()
 
 		local plus = makeSmallButton(row, "+", 36)
 
-		local function clampV(v)
-			v = math.clamp(v, minV, maxV)
-			return v
-		end
-
-		local function refresh()
-			box.Text = tostring(getValue())
-		end
+		local function clampV(v) return math.clamp(v, minV, maxV) end
+		local function refresh() box.Text = tostring(getValue()) end
 
 		minus.MouseButton1Click:Connect(function()
 			local v = clampV(getValue() - step)
-			setValue(v)
-			refresh()
+			setValue(v); refresh()
 		end)
-
 		plus.MouseButton1Click:Connect(function()
 			local v = clampV(getValue() + step)
-			setValue(v)
-			refresh()
+			setValue(v); refresh()
 		end)
-
 		box.FocusLost:Connect(function()
 			local v = tonumber(box.Text)
-			if v then
-				setValue(clampV(v))
-				refresh()
-			else
-				refresh()
-			end
+			if v then setValue(clampV(v)) end
+			refresh()
 		end)
 
 		return row, refresh
 	end
 
 	-- Secção: Destaque
-	local btnHighlight = makeButton("Destaque vermelho (F)")
+	local btnHighlight = makeButton("Destaque vermelho: OFF")
 	btnHighlight.LayoutOrder = 1
 
 	local _, toggleSelfBtn, setSelfUI = makeToggle("Excluir a si mesmo do destaque", excludeSelfFromHighlight)
 	toggleSelfBtn.LayoutOrder = 2
 
-	-- Secção: Voo
-	local rowSpeed, refreshSpeed = makeNumberRow("Velocidade do voo", function() return speed end, function(v) speed = math.floor(v) end, 5, 300, 5)
-	rowSpeed.LayoutOrder = 3
-
-	local btnFly = makeButton("Voo + Noclip (V)")
-	btnFly.LayoutOrder = 4
-
 	-- Secção: Aim Assist
 	local _, aimToggleBtn, setAimUI = makeToggle("Aim Assist (segurar Botão Direito)", aimEnabled)
-	aimToggleBtn.LayoutOrder = 5
+	aimToggleBtn.LayoutOrder = 3
 
 	local rowFOV, refreshFOV = makeNumberRow("Aim FOV (graus)", function() return aimFOV end, function(v) aimFOV = math.floor(v) end, 5, 120, 5)
-	rowFOV.LayoutOrder = 6
+	rowFOV.LayoutOrder = 4
 
-	local rowSmooth, refreshSmooth = makeNumberRow("Aim Suavização (0.0–1.0)", function() return aimSmoothing end, function(v) aimSmoothing = tonumber(string.format("%.2f", v)) end, 0.0, 1.0, 0.05)
-	rowSmooth.LayoutOrder = 7
+	local rowSmooth, refreshSmooth = makeNumberRow("Aim Suavização (0.0–1.0)", function() return aimSmoothing end, function(v) aimSmoothing = tonumber(string.format("%.2f", v)) end, 0.0, 1.0, 0.05, 220)
+	rowSmooth.LayoutOrder = 5
 
 	local _, teamBtn, setTeamUI = makeToggle("Aim ignora companheiros (Team Check)", aimTeamCheck)
-	teamBtn.LayoutOrder = 8
+	teamBtn.LayoutOrder = 6
 
 	local _, visBtn, setVisUI = makeToggle("Aim requer visibilidade (Raycast)", aimRequireVisibility)
-	visBtn.LayoutOrder = 9
-
-	-- Minimizar
-	local minimized = false
-	minimize.MouseButton1Click:Connect(function()
-		minimized = not minimized
-		TweenService:Create(content, TweenInfo.new(0.2), {Size = minimized and UDim2.new(1, -16, 0, 0) or UDim2.new(1, -16, 1, -48)}):Play()
-		TweenService:Create(frame, TweenInfo.new(0.2), {Size = minimized and UDim2.fromOffset(340, 44) or UDim2.fromOffset(340, 300)}):Play()
-		minimize.Text = minimized and "+" or "—"
-	end)
+	visBtn.LayoutOrder = 7
 
 	-- Atualizadores de UI
 	local function refreshButtons()
-		btnHighlight.Text = highlightActive and "Destaque vermelho: ON (F)" or "Destaque vermelho: OFF (F)"
+		btnHighlight.Text = highlightActive and "Destaque vermelho: ON" or "Destaque vermelho: OFF"
 		btnHighlight.TextColor3 = highlightActive and Color3.fromRGB(255, 110, 110) or Color3.fromRGB(230,230,230)
-
-		btnFly.Text = flyActive and ("Voo + Noclip: ON (V)  ["..speed.."]") or "Voo + Noclip: OFF (V)"
-		btnFly.TextColor3 = flyActive and Color3.fromRGB(0, 200, 120) or Color3.fromRGB(230,230,230)
-
 		setSelfUI(excludeSelfFromHighlight)
+
 		setAimUI(aimEnabled)
 		setTeamUI(aimTeamCheck)
 		setVisUI(aimRequireVisibility)
-		refreshSpeed(); refreshFOV(); refreshSmooth()
+		refreshFOV(); refreshSmooth()
 	end
 
-	-- Ligações de UI
+	-- Ligações de UI (sem hotkeys)
 	btnHighlight.MouseButton1Click:Connect(function()
-		setHighlightsEnabled(!highlightActive)
+		setHighlightsEnabled(not highlightActive)
 		refreshButtons()
 	end)
 
@@ -686,14 +466,9 @@ local function createUI()
 		refreshButtons()
 	end)
 
-	btnFly.MouseButton1Click:Connect(function()
-		setFlyEnabled(not flyActive)
-		refreshButtons()
-	end)
-
 	aimToggleBtn.MouseButton1Click:Connect(function()
 		aimEnabled = not aimEnabled
-		if aimEnabled then startAim() else stopAim() end
+		if aimEnabled then startAimLoop() else stopAimLoop() end
 		refreshButtons()
 	end)
 
@@ -707,18 +482,6 @@ local function createUI()
 		refreshButtons()
 	end)
 
-	-- Hotkeys
-	UserInputService.InputBegan:Connect(function(input, processed)
-		if processed then return end
-		if input.KeyCode == Enum.KeyCode.F then
-			setHighlightsEnabled(not highlightActive)
-			refreshButtons()
-		elseif input.KeyCode == Enum.KeyCode.V then
-			setFlyEnabled(not flyActive)
-			refreshButtons()
-		end
-	end)
-
 	refreshButtons()
 end
 
@@ -727,4 +490,4 @@ end
 -- =======================
 setupHighlightConnections()
 createUI()
-startAim() -- inicia laço; ele só age quando aimEnabled e RMB pressionado
+startAimLoop() -- inicia o loop; só atua quando aimEnabled e RMB pressionado
